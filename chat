@@ -1,1 +1,640 @@
-đặt logic của chat ở đây
+-- ======================================================================
+-- NHÁNH 1: KHỞI TẠO VÀ KIỂM TRA MÔI TRƯỜNG
+-- ======================================================================
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+local req = (syn and syn.request) or (http and http.request) or request or http_request
+local gethui = gethui or function() return CoreGui end
+
+_G.HubState = _G.HubState or {}
+_G.HubLogic = _G.HubLogic or {}
+
+_G.HubState.chatNotifyEnabled = _G.HubState.chatNotifyEnabled ~= nil and _G.HubState.chatNotifyEnabled or true
+_G.HubState.chatRefreshRate = _G.HubState.chatRefreshRate or 5
+_G.HubState.chatCountdown = _G.HubState.chatRefreshRate
+_G.HubState.chatAlive = true
+_G.HubState.chatRunId = (_G.HubState.chatRunId or 0) + 1
+local currentRunId = _G.HubState.chatRunId
+
+-- ======================================================================
+-- NHÁNH 2: CHỜ RAYFIELD WINDOW
+-- ======================================================================
+
+local startTime = tick()
+while not _G.HubState.RayfieldWindow do
+    if tick() - startTime > 30 then
+        warn("[CHAT]: Quá thời gian chờ Rayfield Window, dừng khởi tạo module chat.")
+        return
+    end
+    task.wait(0.25)
+end
+local Window = _G.HubState.RayfieldWindow
+
+-- ======================================================================
+-- NHÁNH 3: TẠO TAB CHAT VÀ SẮP XẾP VỊ TRÍ
+-- ======================================================================
+
+local ChatTab = Window:CreateTab("Chat", 4483362458)
+
+pcall(function()
+    local gui = gethui()
+    local rayfieldGui = gui:FindFirstChild("Rayfield") or playerGui:FindFirstChild("Rayfield")
+    if rayfieldGui then
+        local mainFrame = rayfieldGui:FindFirstChild("Main", true)
+        if mainFrame then
+            local tabList = mainFrame:FindFirstChild("TabList", true)
+            local elements = mainFrame:FindFirstChild("Elements", true)
+            if tabList and elements then
+                if tabList:FindFirstChild("UIListLayout") then
+                    tabList.UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                end
+                for _, child in ipairs(tabList:GetChildren()) do
+                    if child:IsA("TextButton") and (child.Text == "Chat" or child.Name:lower():find("chat")) then
+                        child.LayoutOrder = -1
+                    end
+                end
+                for _, child in ipairs(elements:GetChildren()) do
+                    if child.Name == "Chat" or child.Name:lower():find("chat") then
+                        child.LayoutOrder = -1
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ======================================================================
+-- NHÁNH 4: LỚP TRUYỀN TẢI (TRANSPORT LAYER - FIREBASE REST)
+-- ======================================================================
+
+local CONFIG = {
+    DB_URL = "https://chat-776fd-default-rtdb.firebaseio.com" -- [CẤU HÌNH]: Thay thế bằng URL Firebase Realtime Database thực tế của bạn
+}
+
+local Transport = {}
+
+function Transport.fetchMessages()
+    if not req then return nil end
+    local success, res = pcall(function()
+        local response = req({
+            Url = CONFIG.DB_URL .. "/chat.json?orderBy=\"$key\"&limitToLast=50",
+            Method = "GET"
+        })
+        if response and response.Success and response.Body then
+            local data = HttpService:JSONDecode(response.Body)
+            if type(data) == "table" then
+                local list = {}
+                for key, val in pairs(data) do
+                    if type(val) == "table" then
+                        val._key = key
+                        table.insert(list, val)
+                    end
+                end
+                table.sort(list, function(a, b)
+                    return (a.ts or 0) < (b.ts or 0)
+                end)
+                return list
+            end
+        end
+    end)
+    if not success then
+        warn("[CHAT]: Lỗi khi tải tin nhắn: " .. tostring(res))
+    end
+    return nil
+end
+
+function Transport.sendMessage(msgData)
+    if not req then return false end
+    local success, res = pcall(function()
+        local body = HttpService:JSONEncode({
+            uid = tostring(localPlayer.UserId),
+            name = localPlayer.Name,
+            display = localPlayer.DisplayName,
+            text = msgData.text,
+            mentions = msgData.mentions or {},
+            ts = { [".sv"] = "timestamp" }
+        })
+        local response = req({
+            Url = CONFIG.DB_URL .. "/chat.json",
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body
+        })
+        return response and response.Success
+    end)
+    if not success then
+        warn("[CHAT]: Lỗi khi gửi tin nhắn: " .. tostring(res))
+        return false
+    end
+    return success
+end
+
+-- ======================================================================
+-- NHÁNH 5: HỆ THỐNG THÔNG BÁO NỔI (NOTIFICATIONS)
+-- ======================================================================
+
+local notifyGui = playerGui:FindFirstChild("HubChatNotifyGui")
+if notifyGui then notifyGui:Destroy() end
+
+notifyGui = Instance.new("ScreenGui")
+notifyGui.Name = "HubChatNotifyGui"
+notifyGui.IgnoreGuiInset = true
+notifyGui.ResetOnSpawn = false
+notifyGui.DisplayOrder = 999999
+notifyGui.Parent = playerGui
+
+local notificationQueue = {}
+local activeBanners = {}
+
+local function showNotificationBanner(msg)
+    if not _G.HubState.chatNotifyEnabled then
+        local isMentioned = false
+        if msg.mentions then
+            for _, m in ipairs(msg.mentions) do
+                if m:lower() == localPlayer.Name:lower() then
+                    isMentioned = true
+                    break
+                end
+            end
+        end
+        if not isMentioned then return end
+    end
+
+    local function isChatTabVisible()
+        local success, result = pcall(function()
+            local gui = gethui()
+            local rayfieldGui = gui:FindFirstChild("Rayfield") or playerGui:FindFirstChild("Rayfield")
+            if rayfieldGui then
+                local mainFrame = rayfieldGui:FindFirstChild("Main", true)
+                if mainFrame and mainFrame.Visible then
+                    local elements = mainFrame:FindFirstChild("Elements", true)
+                    if elements then
+                        for _, child in ipairs(elements:GetChildren()) do
+                            if (child.Name == "Chat" or child.Name:lower():find("chat")) and child.Visible then
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+            return false
+        end)
+        if success then return result end
+        return false
+    end
+
+    if isChatTabVisible() then return end
+
+    table.insert(notificationQueue, msg)
+    if #notificationQueue > 5 then
+        table.remove(notificationQueue, 1)
+    end
+
+    pcall(function()
+        local thumbUrl = ""
+        pcall(function()
+            local content, isReady = Players:GetUserThumbnailAsync(tonumber(msg.uid) or 1, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
+            if isReady then thumbUrl = content end
+        end)
+
+        local banner = Instance.new("TextButton")
+        banner.Name = "ChatBanner"
+        banner.Size = UDim2.new(0, 320, 0, 50)
+        banner.Position = UDim2.new(0.5, -160, 0, 10 + (#activeBanners * 55))
+        banner.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        banner.BorderSizePixel = 0
+        banner.AutoButtonColor = false
+        banner.Text = ""
+        banner.Parent = notifyGui
+        Instance.new("UICorner", banner).CornerRadius = UDim.new(0, 10)
+
+        local icon = Instance.new("ImageLabel")
+        icon.Size = UDim2.new(0, 36, 0, 36)
+        icon.Position = UDim2.new(0, 7, 0, 7)
+        icon.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        icon.Image = thumbUrl
+        icon.Parent = banner
+        Instance.new("UICorner", icon).CornerRadius = UDim.new(0, 6)
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -50, 1, 0)
+        label.Position = UDim2.new(0, 48, 0, 0)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.TextSize = 13
+        label.Font = Enum.Font.SourceSans
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.RichText = false
+        label.Text = string.format("%s (@%s)\n%s", msg.display or "Unknown", msg.name or "User", msg.text or "")
+        label.Parent = banner
+
+        table.insert(activeBanners, banner)
+
+        banner.MouseButton1Click:Connect(function()
+            banner:Destroy()
+            for i, b in ipairs(activeBanners) do
+                if b == banner then
+                    table.remove(activeBanners, i)
+                    break
+                end
+            end
+        end)
+
+        task.spawn(function()
+            task.wait(4)
+            if banner and banner.Parent then
+                banner:Destroy()
+                for i, b in ipairs(activeBanners) do
+                    if b == banner then
+                        table.remove(activeBanners, i)
+                        break
+                    end
+                end
+            end
+        end)
+    end)
+end
+
+-- ======================================================================
+-- NHÁNH 6: GIAO DIỆN TAB CHAT & THÀNH PHẦN
+-- ======================================================================
+
+local chatElementsTable = {}
+local pageFrame = nil
+
+pcall(function()
+    local gui = gethui()
+    local rayfieldGui = gui:FindFirstChild("Rayfield") or playerGui:FindFirstChild("Rayfield")
+    if rayfieldGui then
+        local mainFrame = rayfieldGui:FindFirstChild("Main", true)
+        if mainFrame then
+            local elements = mainFrame:FindFirstChild("Elements", true)
+            if elements then
+                for _, child in ipairs(elements:GetChildren()) do
+                    if child.Name == "Chat" or child.Name:lower():find("chat") then
+                        pageFrame = child
+                        break
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local customChatContainer = Instance.new("Frame")
+customChatContainer.Name = "CustomChatContainer"
+customChatContainer.Size = UDim2.new(1, 0, 1, 0)
+customChatContainer.BackgroundTransparency = 1
+customChatContainer.Parent = pageFrame or ChatTab
+
+local headerBar = Instance.new("Frame")
+headerBar.Size = UDim2.new(1, -10, 0, 40)
+headerBar.Position = UDim2.new(0, 5, 0, 5)
+headerBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+headerBar.BorderSizePixel = 0
+headerBar.Parent = customChatContainer
+Instance.new("UICorner", headerBar).CornerRadius = UDim.new(0, 10)
+
+local notifyBtn = Instance.new("TextButton")
+notifyBtn.Size = UDim2.new(0, 40, 0, 40)
+notifyBtn.BackgroundTransparency = 1
+notifyBtn.Text = "🔔"
+notifyBtn.TextSize = 18
+notifyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+notifyBtn.Parent = headerBar
+
+local strikeThrough = Instance.new("Frame")
+strikeThrough.Size = UDim2.new(0, 2, 0, 25)
+strikeThrough.Position = UDim2.new(0.5, -1, 0.5, -12.5)
+strikeThrough.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+strikeThrough.Rotation = -45
+strikeThrough.Visible = not _G.HubState.chatNotifyEnabled
+strikeThrough.Parent = notifyBtn
+
+local countdownLabel = Instance.new("TextLabel")
+countdownLabel.Size = UDim2.new(1, -50, 1, 0)
+countdownLabel.Position = UDim2.new(0, 45, 0, 0)
+countdownLabel.BackgroundTransparency = 1
+countdownLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+countdownLabel.TextSize = 12
+countdownLabel.Font = Enum.Font.SourceSansBold
+countdownLabel.TextXAlignment = Enum.TextXAlignment.Right
+countdownLabel.Text = "30s trước làm mới"
+countdownLabel.Parent = headerBar
+
+local chatScrollingFrame = Instance.new("ScrollingFrame")
+chatScrollingFrame.Size = UDim2.new(1, -10, 1, -145)
+chatScrollingFrame.Position = UDim2.new(0, 5, 0, 50)
+chatScrollingFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+chatScrollingFrame.BorderSizePixel = 0
+chatScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+chatScrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+chatScrollingFrame.ScrollBarThickness = 6
+chatScrollingFrame.Parent = customChatContainer
+Instance.new("UICorner", chatScrollingFrame).CornerRadius = UDim.new(0, 10)
+
+local chatUIList = Instance.new("UIListLayout")
+chatUIList.SortOrder = Enum.SortOrder.LayoutOrder
+chatUIList.Padding = UDim.new(0, 4)
+chatUIList.Parent = chatScrollingFrame
+
+local inputFrame = Instance.new("Frame")
+inputFrame.Size = UDim2.new(1, -10, 0, 40)
+inputFrame.Position = UDim2.new(0, 5, 1, -90)
+inputFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+inputFrame.BorderSizePixel = 0
+inputFrame.Parent = customChatContainer
+Instance.new("UICorner", inputFrame).CornerRadius = UDim.new(0, 10)
+
+local chatTextBox = Instance.new("TextBox")
+chatTextBox.Size = UDim2.new(1, -50, 1, 0)
+chatTextBox.Position = UDim2.new(0, 8, 0, 0)
+chatTextBox.BackgroundTransparency = 1
+chatTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatTextBox.PlaceholderText = "Nhập tin nhắn..."
+chatTextBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+chatTextBox.TextSize = 14
+chatTextBox.Font = Enum.Font.SourceSans
+chatTextBox.ClearTextOnFocus = false
+chatTextBox.Parent = inputFrame
+
+local sendBtn = Instance.new("TextButton")
+sendBtn.Size = UDim2.new(0, 40, 0, 40)
+sendBtn.Position = UDim2.new(1, -40, 0, 0)
+sendBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+sendBtn.TextSize = 16
+sendBtn.Font = Enum.Font.SourceSansBold
+sendBtn.Text = ">"
+sendBtn.Parent = inputFrame
+Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0, 10)
+
+local Input_ChatRefreshRate = ChatTab:CreateInput({
+    Name = "tốc độ làm mới",
+    PlaceholderText = "5",
+    CurrentValue = tostring(_G.HubState.chatRefreshRate),
+    RemoveTextOnFocusLost = false,
+    Callback = function(Text)
+        local val = tonumber(Text)
+        if val and val > 0 and val <= 600 then
+            _G.HubState.chatRefreshRate = val
+        end
+    end,
+})
+
+local Toggle_ChatNotify = ChatTab:CreateToggle({
+    Name = "thông báo chat",
+    CurrentValue = _G.HubState.chatNotifyEnabled,
+    Flag = "Toggle_ChatNotify_Flag",
+    Callback = function(Value)
+        _G.HubState.chatNotifyEnabled = Value
+        strikeThrough.Visible = not Value
+    end,
+})
+
+ChatTab:CreateButton({
+    Name = "làm mới tức thì",
+    Callback = function()
+        if _G.HubLogic.ChatRefreshNow then
+            _G.HubLogic.ChatRefreshNow()
+        end
+    end,
+})
+
+chatElementsTable.Input_ChatRefreshRate = Input_ChatRefreshRate
+chatElementsTable.Toggle_ChatNotify = Toggle_ChatNotify
+_G.HubState.ChatUIElements = chatElementsTable
+
+-- ======================================================================
+-- NHÁNH 7: LOGIC GỬI, NHẬN VÀ LÀM MỚI
+-- ======================================================================
+
+local renderedMessages = {}
+local lastSendTick = 0
+local forceRefreshEvent = Instance.new("BindableEvent")
+
+local function isUserAtBottom()
+    return (chatScrollingFrame.CanvasPosition.Y + chatScrollingFrame.AbsoluteWindowSize.Y) >= (chatScrollingFrame.AbsoluteCanvasSize.Y - 20)
+end
+
+local function renderMessage(msg)
+    if not msg or not msg._key then return end
+    if renderedMessages[msg._key] then return end
+    renderedMessages[msg._key] = true
+
+    pcall(function()
+        local atBottom = isUserAtBottom()
+
+        local msgFrame = Instance.new("Frame")
+        msgFrame.Size = UDim2.new(1, 0, 0, 0)
+        msgFrame.AutomaticSize = Enum.AutomaticSize.Y
+        msgFrame.BackgroundTransparency = 1
+        msgFrame.Parent = chatScrollingFrame
+
+        local isOwn = (tostring(msg.uid) == tostring(localPlayer.UserId))
+        local isMentioned = false
+        if msg.mentions then
+            for _, m in ipairs(msg.mentions) do
+                if m:lower() == localPlayer.Name:lower() then
+                    isMentioned = true
+                    break
+                end
+            end
+        end
+
+        local inner = Instance.new("Frame")
+        inner.Size = UDim2.new(1, 0, 0, 0)
+        inner.AutomaticSize = Enum.AutomaticSize.Y
+        inner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        inner.BorderSizePixel = 0
+        inner.Parent = msgFrame
+        Instance.new("UICorner", inner).CornerRadius = UDim.new(0, 6)
+
+        if isMentioned or isOwn then
+            local stroke = Instance.new("UIStroke")
+            stroke.Color = isOwn and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 170, 0)
+            stroke.Thickness = 1.5
+            stroke.Parent = inner
+        end
+
+        local padding = Instance.new("UIPadding")
+        padding.PaddingTop = UDim.new(0, 6)
+        padding.PaddingBottom = UDim.new(0, 6)
+        padding.PaddingLeft = UDim.new(0, 8)
+        padding.PaddingRight = UDim.new(0, 8)
+        padding.Parent = inner
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Size = UDim2.new(1, 0, 0, 0)
+        textLabel.AutomaticSize = Enum.AutomaticSize.Y
+        textLabel.BackgroundTransparency = 1
+        textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        textLabel.TextSize = 13
+        textLabel.Font = Enum.Font.SourceSans
+        textLabel.TextXAlignment = Enum.TextXAlignment.Left
+        textLabel.TextWrapped = true
+        textLabel.RichText = false
+        textLabel.Text = string.format("%s (@%s):\n%s", msg.display or "Unknown", msg.name or "User", msg.text or "")
+        textLabel.Parent = inner
+
+        if #chatScrollingFrame:GetChildren() > 100 then
+            local oldest = chatScrollingFrame:GetChildren()[1]
+            if oldest and oldest:IsA("Frame") then
+                oldest:Destroy()
+            end
+        end
+
+        if atBottom then
+            chatScrollingFrame.CanvasPosition = Vector2.new(0, chatScrollingFrame.AbsoluteCanvasSize.Y)
+        end
+    end)
+end
+
+local function extractMentions(text)
+    local mentions = {}
+    for name in string.gmatch(text, "@([%w_]+)") do
+        table.insert(mentions, name)
+    end
+    return mentions
+end
+
+function _G.HubLogic.ChatSend()
+    local text = chatTextBox.Text
+    if not text or text == "" then return end
+    if tick() - lastSendTick < 2 then return end
+    if #text > 200 then text = string.sub(text, 1, 200) end
+    lastSendTick = tick()
+
+    chatTextBox.Text = ""
+
+    local mentions = extractMentions(text)
+    local localMsg = {
+        _key = "local_" .. tostring(tick()),
+        uid = tostring(localPlayer.UserId),
+        name = localPlayer.Name,
+        display = localPlayer.DisplayName,
+        text = text,
+        mentions = mentions,
+        ts = tick() * 1000
+    }
+    renderMessage(localMsg)
+
+    task.spawn(function()
+        Transport.sendMessage({ text = text, mentions = mentions })
+        forceRefreshEvent:Fire()
+    end)
+end
+
+sendBtn.MouseButton1Click:Connect(_G.HubLogic.ChatSend)
+chatTextBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        _G.HubLogic.ChatSend()
+    end
+end)
+
+function _G.HubLogic.ChatRefreshNow()
+    forceRefreshEvent:Fire()
+end
+
+function _G.HubLogic.ChatSetNotify(val)
+    _G.HubState.chatNotifyEnabled = val
+    Toggle_ChatNotify:Set(val)
+    strikeThrough.Visible = not val
+end
+
+function _G.HubLogic.ChatSetRate(val)
+    if val and val > 0 and val <= 600 then
+        _G.HubState.chatRefreshRate = val
+        Input_ChatRefreshRate:Set(tostring(val))
+    end
+end
+
+function _G.HubLogic.ChatDestroy()
+    _G.HubState.chatAlive = false
+    if notifyGui then notifyGui:Destroy() end
+    if customChatContainer then customChatContainer:Destroy() end
+end
+
+notifyBtn.MouseButton1Click:Connect(function()
+    local newVal = not _G.HubState.chatNotifyEnabled
+    _G.HubLogic.ChatSetNotify(newVal)
+end)
+
+-- ======================================================================
+-- NHÁNH 8: VÒNG LẶP CHẠY NỀN & THÔNG BÁO
+-- ======================================================================
+
+local isFirstLoad = true
+
+task.spawn(function()
+    local backoff = 1
+    while _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
+        local msgs = Transport.fetchMessages()
+        if msgs then
+            backoff = 1
+            for _, msg in ipairs(msgs) do
+                if isFirstLoad then
+                    renderedMessages[msg._key] = true
+                else
+                    if not renderedMessages[msg._key] then
+                        if tostring(msg.uid) ~= tostring(localPlayer.UserId) then
+                            showNotificationBanner(msg)
+                        end
+                    end
+                end
+                renderMessage(msg)
+            end
+            isFirstLoad = false
+        else
+            backoff = math.min(backoff * 2, 60)
+        end
+
+        local currentRate = _G.HubState.chatRefreshRate or 5
+        local remaining = currentRate
+        while remaining > 0 and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
+            _G.HubState.chatCountdown = remaining
+            pcall(function()
+                countdownLabel.Text = tostring(remaining) .. "s trước làm mới"
+            end)
+            
+            local fired = false
+            local conn
+            conn = forceRefreshEvent.Event:Connect(function()
+                fired = true
+                if conn then conn:Disconnect() end
+            end)
+
+            local elapsed = 0
+            while elapsed < 1 and not fired and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
+                task.wait(0.1)
+                elapsed = elapsed + 0.1
+            end
+            if conn then conn:Disconnect() end
+
+            if fired then break end
+            remaining = remaining - 1
+        end
+    end
+end)
+
+-- ======================================================================
+-- NHÁNH 9: TÍCH HỢP DỌN DẸP & HỦY
+-- ======================================================================
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if _G.HubLogic.DestroyAll then
+            local oldDestroy = _G.HubLogic.DestroyAll
+            _G.HubLogic.DestroyAll = function(...)
+                pcall(function() _G.HubLogic.ChatDestroy() end)
+                return oldDestroy(...)
+            end
+            break
+        end
+    end
+end)
