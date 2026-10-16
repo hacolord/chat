@@ -36,10 +36,10 @@ end
 local Window = _G.HubState.RayfieldWindow
 
 -- ======================================================================
--- NHÁNH 3: TẠO TAB CHAT VÀ SẮP XẾP VỊ TRÍ (ĐẦU TIÊN TỪ TRÁI SANG PHẢI)
+-- NHÁNH 3: TẠO TAB CHAT VÀ SẮP XẾP VỊ TRÍ
 -- ======================================================================
 
-local ChatTab = Window:CreateTab("Chat", 4483362458)
+local ChatTab = _G.HubState.ChatTabReference or Window:CreateTab("Chat", 4483362458)
 
 pcall(function()
     local gui = gethui()
@@ -261,7 +261,7 @@ local function showNotificationBanner(msg)
 end
 
 -- ======================================================================
--- NHÁNH 6: GIAO DIỆN TAB CHAT & THÀNH PHẦN (PHÓNG TO KHUNG CHAT RỘNG RÃI)
+-- NHÁNH 6: GIAO DIỆN TAB CHAT & THÀNH PHẦN
 -- ======================================================================
 
 local chatElementsTable = {}
@@ -290,7 +290,7 @@ local customChatContainer = Instance.new("Frame")
 customChatContainer.Name = "CustomChatContainer"
 customChatContainer.Size = UDim2.new(1, 0, 1, 0)
 customChatContainer.BackgroundTransparency = 1
--- Đảm bảo an toàn không parent trực tiếp vào đối tượng ChatTab (vốn là table của Rayfield)
+-- AN TOÀN TUYỆT ĐỐI: Parent vào pageFrame tìm được hoặc playerGui thay vì parent nhầm vào table đối tượng Rayfield gây kẹt GUI
 customChatContainer.Parent = pageFrame or playerGui
 
 local headerBar = Instance.new("Frame")
@@ -328,7 +328,6 @@ countdownLabel.TextXAlignment = Enum.TextXAlignment.Right
 countdownLabel.Text = "30s trước làm mới"
 countdownLabel.Parent = headerBar
 
--- PHÓNG TO KHUNG CHAT (SCROLLING FRAME) CAO HƠN VÀ RỘNG HƠN ĐỂ DỄ ĐỌC
 local chatScrollingFrame = Instance.new("ScrollingFrame")
 chatScrollingFrame.Size = UDim2.new(1, -10, 1, -110)
 chatScrollingFrame.Position = UDim2.new(0, 5, 0, 55)
@@ -345,7 +344,6 @@ chatUIList.SortOrder = Enum.SortOrder.LayoutOrder
 chatUIList.Padding = UDim.new(0, 6)
 chatUIList.Parent = chatScrollingFrame
 
--- PHÓNG TO KHUNG NHẬP VĂN BẢN (INPUT FRAME) CHO DỄ THAO TÁC
 local inputFrame = Instance.new("Frame")
 inputFrame.Size = UDim2.new(1, -10, 0, 48)
 inputFrame.Position = UDim2.new(0, 5, 1, -52)
@@ -414,7 +412,7 @@ chatElementsTable.Toggle_ChatNotify = Toggle_ChatNotify
 _G.HubState.ChatUIElements = chatElementsTable
 
 -- ======================================================================
--- NHÁNH 7: LOGIC GỬI, NHẬN VÀ HIỂN THỊ AVATAR/TIN NHẮN
+-- NHÁNH 7: LOGIC GỬI, NHẬN VÀ HIỂN THỊ AVATAR / TIN NHẮN
 -- ======================================================================
 
 local renderedMessages = {}
@@ -472,11 +470,16 @@ local function renderMessage(msg)
         padding.PaddingRight = UDim.new(0, 8)
         padding.Parent = inner
 
-        -- TẢI VÀ HIỂN THỊ AVATAR ROBROX CỦA NGƯỜI CHAT
+        -- SỬA LỖI HIỂN THỊ AVATAR: SỬ DỤNG THUMBNAIL ASYNC HOẶC ĐỊNH DẠNG rbxthumb:// ĐỂ HIỂN THỊ CHÍNH XÁC
         local thumbUrl = ""
         pcall(function()
-            local content, isReady = Players:GetUserThumbnailAsync(tonumber(msg.uid) or 1, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
-            if isReady then thumbUrl = content end
+            local targetUserId = tonumber(msg.uid) or localPlayer.UserId
+            local content, isReady = Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
+            if isReady and content ~= "" then
+                thumbUrl = content
+            else
+                thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=42&h=42"
+            end
         end)
 
         local avatarImg = Instance.new("ImageLabel")
@@ -618,7 +621,7 @@ task.spawn(function()
         while remaining > 0 and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
             _G.HubState.chatCountdown = remaining
             pcall(function()
-                countdownLabel.Text = tostring(remaining) .."s trước làm mới"
+                countdownLabel.Text = tostring(remaining) .. "s trước làm mới"
             end)
             
             local fired = false
