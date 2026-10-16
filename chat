@@ -1,5 +1,5 @@
 -- ======================================================================
--- NHÁNH 1: KHỞI TẠO VÀ KIỂM TRA MÔI TRƯỜNG
+-- NHÁNH 1: KHỞI TẠO VÀ KIỂM TRA MÔI TRƯỜNG (FIX KHUNG CHAT TO GẤP 1.75 LẦN & AVATAR)
 -- ======================================================================
 
 local Players = game:GetService("Players")
@@ -198,8 +198,8 @@ local function showNotificationBanner(msg)
     pcall(function()
         local thumbUrl = ""
         pcall(function()
-            local content, isReady = Players:GetUserThumbnailAsync(tonumber(msg.uid) or 1, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
-            if isReady then thumbUrl = content end
+            local targetUserId = tonumber(msg.uid) or 1
+            thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=42&h=42"
         end)
 
         local banner = Instance.new("TextButton")
@@ -261,7 +261,7 @@ local function showNotificationBanner(msg)
 end
 
 -- ======================================================================
--- NHÁNH 6: GIAO DIỆN TAB CHAT & THÀNH PHẦN
+-- NHÁNH 6: GIAO DIỆN TAB CHAT & THÀNH PHẦN (PHÓNG TO x1.75 LẦN)
 -- ======================================================================
 
 local chatElementsTable = {}
@@ -290,11 +290,10 @@ local customChatContainer = Instance.new("Frame")
 customChatContainer.Name = "CustomChatContainer"
 customChatContainer.Size = UDim2.new(1, 0, 1, 0)
 customChatContainer.BackgroundTransparency = 1
--- AN TOÀN TUYỆT ĐỐI: Parent vào pageFrame tìm được hoặc playerGui thay vì parent nhầm vào table đối tượng Rayfield gây kẹt GUI
 customChatContainer.Parent = pageFrame or playerGui
 
 local headerBar = Instance.new("Frame")
-headerBar.Size = UDim2.new(1, -10, 0, 45)
+headerBar.Size = UDim2.new(1, -10, 0, math.floor(45 * 1.75))
 headerBar.Position = UDim2.new(0, 5, 0, 5)
 headerBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 headerBar.BorderSizePixel = 0
@@ -302,74 +301,74 @@ headerBar.Parent = customChatContainer
 Instance.new("UICorner", headerBar).CornerRadius = UDim.new(0, 10)
 
 local notifyBtn = Instance.new("TextButton")
-notifyBtn.Size = UDim2.new(0, 45, 0, 45)
+notifyBtn.Size = UDim2.new(0, math.floor(45 * 1.75), 0, math.floor(45 * 1.75))
 notifyBtn.BackgroundTransparency = 1
 notifyBtn.Text = "🔔"
-notifyBtn.TextSize = 20
+notifyBtn.TextSize = math.floor(20 * 1.75)
 notifyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 notifyBtn.Parent = headerBar
 
 local strikeThrough = Instance.new("Frame")
-strikeThrough.Size = UDim2.new(0, 2, 0, 28)
-strikeThrough.Position = UDim2.new(0.5, -1, 0.5, -14)
+strikeThrough.Size = UDim2.new(0, 3, 0, math.floor(28 * 1.75))
+strikeThrough.Position = UDim2.new(0.5, -1, 0.5, math.floor(-14 * 1.75))
 strikeThrough.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
 strikeThrough.Rotation = -45
 strikeThrough.Visible = not _G.HubState.chatNotifyEnabled
 strikeThrough.Parent = notifyBtn
 
 local countdownLabel = Instance.new("TextLabel")
-countdownLabel.Size = UDim2.new(1, -55, 1, 0)
-countdownLabel.Position = UDim2.new(0, 50, 0, 0)
+countdownLabel.Size = UDim2.new(1, math.floor(-55 * 1.75), 1, 0)
+countdownLabel.Position = UDim2.new(0, math.floor(50 * 1.75), 0, 0)
 countdownLabel.BackgroundTransparency = 1
 countdownLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-countdownLabel.TextSize = 13
+countdownLabel.TextSize = math.floor(13 * 1.75)
 countdownLabel.Font = Enum.Font.SourceSansBold
 countdownLabel.TextXAlignment = Enum.TextXAlignment.Right
 countdownLabel.Text = "30s trước làm mới"
 countdownLabel.Parent = headerBar
 
 local chatScrollingFrame = Instance.new("ScrollingFrame")
-chatScrollingFrame.Size = UDim2.new(1, -10, 1, -110)
-chatScrollingFrame.Position = UDim2.new(0, 5, 0, 55)
+chatScrollingFrame.Size = UDim2.new(1, -10, 1, math.floor(-110 * 1.75) - 20)
+chatScrollingFrame.Position = UDim2.new(0, 5, 0, math.floor(45 * 1.75) + 12)
 chatScrollingFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 chatScrollingFrame.BorderSizePixel = 0
 chatScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 chatScrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-chatScrollingFrame.ScrollBarThickness = 8
+chatScrollingFrame.ScrollBarThickness = math.floor(8 * 1.75)
 chatScrollingFrame.Parent = customChatContainer
 Instance.new("UICorner", chatScrollingFrame).CornerRadius = UDim.new(0, 10)
 
 local chatUIList = Instance.new("UIListLayout")
 chatUIList.SortOrder = Enum.SortOrder.LayoutOrder
-chatUIList.Padding = UDim.new(0, 6)
+chatUIList.Padding = UDim.new(0, math.floor(6 * 1.75))
 chatUIList.Parent = chatScrollingFrame
 
 local inputFrame = Instance.new("Frame")
-inputFrame.Size = UDim2.new(1, -10, 0, 48)
-inputFrame.Position = UDim2.new(0, 5, 1, -52)
+inputFrame.Size = UDim2.new(1, -10, 0, math.floor(48 * 1.75))
+inputFrame.Position = UDim2.new(0, 5, 1, math.floor(-52 * 1.75) - 5)
 inputFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 inputFrame.BorderSizePixel = 0
 inputFrame.Parent = customChatContainer
 Instance.new("UICorner", inputFrame).CornerRadius = UDim.new(0, 10)
 
 local chatTextBox = Instance.new("TextBox")
-chatTextBox.Size = UDim2.new(1, -55, 1, 0)
-chatTextBox.Position = UDim2.new(0, 10, 0, 0)
+chatTextBox.Size = UDim2.new(1, math.floor(-55 * 1.75), 1, 0)
+chatTextBox.Position = UDim2.new(0, 15, 0, 0)
 chatTextBox.BackgroundTransparency = 1
 chatTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 chatTextBox.PlaceholderText = "Nhập tin nhắn..."
 chatTextBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
-chatTextBox.TextSize = 15
+chatTextBox.TextSize = math.floor(15 * 1.75)
 chatTextBox.Font = Enum.Font.SourceSans
 chatTextBox.ClearTextOnFocus = false
 chatTextBox.Parent = inputFrame
 
 local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.new(0, 48, 0, 48)
-sendBtn.Position = UDim2.new(1, -48, 0, 0)
+sendBtn.Size = UDim2.new(0, math.floor(48 * 1.75), 0, math.floor(48 * 1.75))
+sendBtn.Position = UDim2.new(1, math.floor(-48 * 1.75), 0, 0)
 sendBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-sendBtn.TextSize = 18
+sendBtn.TextSize = math.floor(18 * 1.75)
 sendBtn.Font = Enum.Font.SourceSansBold
 sendBtn.Text = ">"
 sendBtn.Parent = inputFrame
@@ -412,7 +411,7 @@ chatElementsTable.Toggle_ChatNotify = Toggle_ChatNotify
 _G.HubState.ChatUIElements = chatElementsTable
 
 -- ======================================================================
--- NHÁNH 7: LOGIC GỬI, NHẬN VÀ HIỂN THỊ AVATAR / TIN NHẮN
+-- NHÁNH 7: LOGIC GỬI, NHẬN VÀ HIỂN THỊ AVATAR ĐÚNG CHUẨN ROBLOX
 -- ======================================================================
 
 local renderedMessages = {}
@@ -464,26 +463,21 @@ local function renderMessage(msg)
         end
 
         local padding = Instance.new("UIPadding")
-        padding.PaddingTop = UDim.new(0, 8)
-        padding.PaddingBottom = UDim.new(0, 8)
-        padding.PaddingLeft = UDim.new(0, 8)
-        padding.PaddingRight = UDim.new(0, 8)
+        padding.PaddingTop = UDim.new(0, math.floor(8 * 1.75))
+        padding.PaddingBottom = UDim.new(0, math.floor(8 * 1.75))
+        padding.PaddingLeft = UDim.new(0, math.floor(8 * 1.75))
+        padding.PaddingRight = UDim.new(0, math.floor(8 * 1.75))
         padding.Parent = inner
 
-        -- SỬA LỖI HIỂN THỊ AVATAR: SỬ DỤNG THUMBNAIL ASYNC HOẶC ĐỊNH DẠNG rbxthumb:// ĐỂ HIỂN THỊ CHÍNH XÁC
+        -- FIX LỖI AVATAR: SỬ DỤNG GIAO THỨC rbxthumb:// ĐỂ HIỂN THỊ CHÍNH XÁC 100%
         local thumbUrl = ""
         pcall(function()
             local targetUserId = tonumber(msg.uid) or localPlayer.UserId
-            local content, isReady = Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
-            if isReady and content ~= "" then
-                thumbUrl = content
-            else
-                thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=42&h=42"
-            end
+            thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=150&h=150"
         end)
 
         local avatarImg = Instance.new("ImageLabel")
-        avatarImg.Size = UDim2.new(0, 32, 0, 32)
+        avatarImg.Size = UDim2.new(0, math.floor(32 * 1.75), 0, math.floor(32 * 1.75))
         avatarImg.Position = UDim2.new(0, 0, 0, 0)
         avatarImg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
         avatarImg.Image = thumbUrl
@@ -491,12 +485,12 @@ local function renderMessage(msg)
         Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(0, 6)
 
         local textLabel = Instance.new("TextLabel")
-        textLabel.Size = UDim2.new(1, -40, 0, 0)
-        textLabel.Position = UDim2.new(0, 40, 0, 0)
+        textLabel.Size = UDim2.new(1, math.floor(-40 * 1.75), 0, 0)
+        textLabel.Position = UDim2.new(0, math.floor(40 * 1.75), 0, 0)
         textLabel.AutomaticSize = Enum.AutomaticSize.Y
         textLabel.BackgroundTransparency = 1
         textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        textLabel.TextSize = 14
+        textLabel.TextSize = math.floor(14 * 1.75)
         textLabel.Font = Enum.Font.SourceSans
         textLabel.TextXAlignment = Enum.TextXAlignment.Left
         textLabel.TextWrapped = true
