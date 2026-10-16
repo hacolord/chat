@@ -73,7 +73,7 @@ end)
 -- ======================================================================
 
 local CONFIG = {
-    DB_URL = "https://chat-776fd-default-rtdb.firebaseio.com" -- [CẤU HÌNH]: Thay thế bằng URL Firebase Realtime Database thực tế của bạn
+    DB_URL = "https://chat-776fd-default-rtdb.asia-southeast1.firebasedatabase.app"
 }
 
 local Transport = {}
