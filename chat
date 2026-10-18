@@ -14,7 +14,7 @@ local req = (syn and syn.request) or (http and http.request) or request or http_
 
 -- Biến cấu hình chính
 local CONFIG = {
-    DB_URL = "https://chat-776fd-default-rtdb.firebaseio.com",
+    DB_URL = "https://chat-776fd-default-rtdb.asia-southeast1.firebasedatabase.app",
     LOCAL_ECHO = true
 }
 
