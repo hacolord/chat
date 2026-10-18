@@ -1,491 +1,521 @@
 -- ======================================================================
--- NHÁNH 1: KHỞI TẠO VÀ KIỂM TRA MÔI TRƯỜNG (CHỈ XỬ LÝ LOGIC CHAT, GIAO DIỆN NẰM Ở GUI-PV)
+-- NHÁNH: MODULE CHAT REAL-TIME HOÀN CHỈNH CHO HUB GUI-PV(9)
 -- ======================================================================
 
 local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
-
-local req = (syn and syn.request) or (http and http.request) or request or http_request
 local gethui = gethui or function() return CoreGui end
+
+-- HTTP Request wrapper
+local req = (syn and syn.request) or (http and http.request) or request or http_request
+
+-- Biến cấu hình chính
+local CONFIG = {
+    DB_URL = "https://chat-776fd-default-rtdb.firebaseio.com",
+    LOCAL_ECHO = true
+}
 
 _G.HubState = _G.HubState or {}
 _G.HubLogic = _G.HubLogic or {}
 
-_G.HubState.chatNotifyEnabled = _G.HubState.chatNotifyEnabled ~= nil and _G.HubState.chatNotifyEnabled or true
-_G.HubState.chatRefreshRate = _G.HubState.chatRefreshRate or 5
+-- Khởi tạo State mặc định (Xử lý an toàn tránh lỗi x or true)
+if _G.HubState.chatOpen == nil then _G.HubState.chatOpen = false end
+if _G.HubState.chatNotifyEnabled == nil then _G.HubState.chatNotifyEnabled = true end
+if _G.HubState.chatRefreshRate == nil then _G.HubState.chatRefreshRate = 10 end
 _G.HubState.chatCountdown = _G.HubState.chatRefreshRate
 _G.HubState.chatAlive = true
 _G.HubState.chatRunId = (_G.HubState.chatRunId or 0) + 1
 local currentRunId = _G.HubState.chatRunId
 
--- ======================================================================
--- NHÁNH 2: CHỜ RAYFIELD WINDOW
--- ======================================================================
-
-local startTime = tick()
-while not _G.HubState.RayfieldWindow do
-    if tick() - startTime > 30 then
-        warn("[CHAT]: Quá thời gian chờ Rayfield Window, dừng khởi tạo module chat.")
-        return
+-- Dọn dẹp GUI và Connections cũ nếu có
+local function ChatDestroy()
+    _G.HubState.chatAlive = false
+    if _G.HubState.IndependentChatGui then
+        pcall(function() _G.HubState.IndependentChatGui:Destroy() end)
+        _G.HubState.IndependentChatGui = nil
     end
-    task.wait(0.25)
+    if _G.HubState.HubChatNotifyGui then
+        pcall(function() _G.HubState.HubChatNotifyGui:Destroy() end)
+        _G.HubState.HubChatNotifyGui = nil
+    end
 end
 
--- ======================================================================
--- NHÁNH 3: LỚP TRUYỀN TẢI (TRANSPORT LAYER - FIREBASE REST)
--- ======================================================================
+if _G.HubLogic.ChatDestroy then
+    pcall(_G.HubLogic.ChatDestroy)
+end
+_G.HubLogic.ChatDestroy = ChatDestroy
 
-local CONFIG = {
-    DB_URL = "https://chat-776fd-default-rtdb.asia-southeast1.firebasedatabase.app"
-}
-
+-- ================= [ NHÁNH 1: TRANSPORT & FIREBASE ] =================
 local Transport = {}
 
 function Transport.fetchMessages()
-    if not req then return nil end
-    local success, res = pcall(function()
+    local success, result = pcall(function()
+        if not req then return nil end
+        local url = CONFIG.DB_URL .. "/chat.json?orderBy=\"$key\"&limitToLast=50"
         local response = req({
-            Url = CONFIG.DB_URL .. "/chat.json?orderBy=\"$key\"&limitToLast=50",
+            Url = url,
             Method = "GET"
         })
         if response and response.Success and response.Body then
-            local data = HttpService:JSONDecode(response.Body)
-            if type(data) == "table" then
-                local list = {}
-                for key, val in pairs(data) do
-                    if type(val) == "table" then
-                        val._key = key
-                        table.insert(list, val)
-                    end
-                end
-                table.sort(list, function(a, b)
-                    return (a.ts or 0) < (b.ts or 0)
-                end)
-                return list
+            if response.Body ~= "null" and response.Body ~= "" then
+                return HttpService:JSONDecode(response.Body)
             end
         end
+        return nil
     end)
     if not success then
-        warn("[CHAT]: Lỗi khi tải tin nhắn: " .. tostring(res))
+        warn("[CHAT]: Lỗi tải tin nhắn từ Firebase: " .. tostring(result))
+        return nil
     end
-    return nil
+    return result
 end
 
 function Transport.sendMessage(msgData)
-    if not req then return false end
-    local success, res = pcall(function()
-        local body = HttpService:JSONEncode({
-            uid = tostring(localPlayer.UserId),
-            name = localPlayer.Name,
-            display = localPlayer.DisplayName,
-            text = msgData.text,
-            mentions = msgData.mentions or {},
-            ts = { [".sv"] = "timestamp" }
-        })
+    local success, result = pcall(function()
+        if not req then return false end
+        local url = CONFIG.DB_URL .. "/chat.json"
         local response = req({
-            Url = CONFIG.DB_URL .. "/chat.json",
+            Url = url,
             Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = body
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode(msgData)
         })
         return response and response.Success
     end)
     if not success then
-        warn("[CHAT]: Lỗi khi gửi tin nhắn: " .. tostring(res))
+        warn("[CHAT]: Lỗi gửi tin nhắn lên Firebase: " .. tostring(result))
         return false
     end
-    return success
+    return result
 end
 
--- ======================================================================
--- NHÁNH 4: HỆ THỐNG THÔNG BÁO NỔI (NOTIFICATIONS)
--- ======================================================================
-
-local notifyGui = playerGui:FindFirstChild("HubChatNotifyGui")
-if notifyGui then notifyGui:Destroy() end
-
-notifyGui = Instance.new("ScreenGui")
+-- ================= [ NHÁNH 2: NOTIFY GUI (BANNER) ] =================
+local notifyGui = Instance.new("ScreenGui")
 notifyGui.Name = "HubChatNotifyGui"
-notifyGui.IgnoreGuiInset = true
 notifyGui.ResetOnSpawn = false
-notifyGui.DisplayOrder = 999999
-notifyGui.Parent = playerGui
+notifyGui.IgnoreGuiInset = true
+notifyGui.DisplayOrder = 100000
+notifyGui.Parent = gethui()
+_G.HubState.HubChatNotifyGui = notifyGui
 
-local notificationQueue = {}
-local activeBanners = {}
+local notifyContainer = Instance.new("Frame")
+notifyContainer.Name = "NotifyContainer"
+notifyContainer.Size = UDim2.new(0, 300, 0, 200)
+notifyContainer.Position = UDim2.new(0.5, -150, 0, 4)
+notifyContainer.BackgroundTransparency = 1
+notifyContainer.Parent = notifyGui
 
-local function showNotificationBanner(msg)
-    if not _G.HubState.chatNotifyEnabled then
-        local isMentioned = false
-        if msg.mentions then
-            for _, m in ipairs(msg.mentions) do
-                if m:lower() == localPlayer.Name:lower() then
-                    isMentioned = true
-                    break
-                end
-            end
-        end
-        if not isMentioned then return end
-    end
+local notifyLayout = Instance.new("UIListLayout")
+notifyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+notifyLayout.Padding = UDim.new(0, 5)
+notifyLayout.Parent = notifyContainer
 
-    local function isChatTabVisible()
-        local success, result = pcall(function()
-            local gui = gethui()
-            local rayfieldGui = gui:FindFirstChild("Rayfield") or playerGui:FindFirstChild("Rayfield")
-            if rayfieldGui then
-                local mainFrame = rayfieldGui:FindFirstChild("Main", true)
-                if mainFrame and mainFrame.Visible then
-                    local elements = mainFrame:FindFirstChild("Elements", true)
-                    if elements then
-                        for _, child in ipairs(elements:GetChildren()) do
-                            if (child.Name == "Chat" or child.Name:lower():find("chat")) and child.Visible then
-                                return true
-                            end
-                        end
-                    end
-                end
-            end
-            return false
-        end)
-        if success then return result end
-        return false
-    end
+local activeBanners = 0
+local function showNotification(senderName, senderDisplay, senderUserId, text)
+    if activeBanners >= 5 then return end
+    activeBanners = activeBanners + 1
 
-    if isChatTabVisible() then return end
+    local banner = Instance.new("TextButton")
+    banner.Size = UDim2.new(1, 0, 0, 36)
+    banner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    banner.BackgroundTransparency = 0.1
+    banner.Text = ""
+    banner.AutoButtonColor = false
+    banner.Parent = notifyContainer
 
-    table.insert(notificationQueue, msg)
-    if #notificationQueue > 5 then
-        table.remove(notificationQueue, 1)
-    end
+    Instance.new("UICorner", banner).CornerRadius = UDim.new(0, 6)
+    Instance.new("UIStroke", banner).Color = Color3.fromRGB(80, 80, 80)
+
+    local avatarImg = Instance.new("ImageLabel")
+    avatarImg.Size = UDim2.new(0, 28, 0, 28)
+    avatarImg.Position = UDim2.new(0, 4, 0.5, -14)
+    avatarImg.BackgroundTransparency = 1
+    avatarImg.Parent = banner
+    Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(1, 0)
 
     pcall(function()
-        local thumbUrl = ""
-        pcall(function()
-            local targetUserId = tonumber(msg.uid) or 1
-            thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=42&h=42"
-        end)
+        local content = Players:GetUserThumbnailAsync(senderUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size42x42)
+        avatarImg.Image = content
+    end)
 
-        local banner = Instance.new("TextButton")
-        banner.Name = "ChatBanner"
-        banner.Size = UDim2.new(0, 320, 0, 50)
-        banner.Position = UDim2.new(0.5, -160, 0, 10 + (#activeBanners * 55))
-        banner.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-        banner.BorderSizePixel = 0
-        banner.AutoButtonColor = false
-        banner.Text = ""
-        banner.Parent = notifyGui
-        Instance.new("UICorner", banner).CornerRadius = UDim.new(0, 10)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -38, 1, 0)
+    label.Position = UDim2.new(0, 36, 0, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 11
+    label.Font = Enum.Font.SourceSans
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextWrapped = true
+    label.Text = string.format("%s (@%s): %s", senderDisplay, senderName, text)
+    label.Parent = banner
 
-        local icon = Instance.new("ImageLabel")
-        icon.Size = UDim2.new(0, 36, 0, 36)
-        icon.Position = UDim2.new(0, 7, 0, 7)
-        icon.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-        icon.Image = thumbUrl
-        icon.Parent = banner
-        Instance.new("UICorner", icon).CornerRadius = UDim.new(0, 6)
+    banner.MouseButton1Click:Connect(function()
+        banner:Destroy()
+        activeBanners = math.max(0, activeBanners - 1)
+    end)
 
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.new(1, -50, 1, 0)
-        label.Position = UDim2.new(0, 48, 0, 0)
-        label.BackgroundTransparency = 1
-        label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.TextSize = 13
-        label.Font = Enum.Font.SourceSans
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.RichText = false
-        label.Text = string.format("%s (@%s)\n%s", msg.display or "Unknown", msg.name or "User", msg.text or "")
-        label.Parent = banner
-
-        table.insert(activeBanners, banner)
-
-        banner.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        task.wait(4)
+        if banner and banner.Parent then
             banner:Destroy()
-            for i, b in ipairs(activeBanners) do
-                if b == banner then
-                    table.remove(activeBanners, i)
-                    break
-                end
-            end
-        end)
-
-        task.spawn(function()
-            task.wait(4)
-            if banner and banner.Parent then
-                banner:Destroy()
-                for i, b in ipairs(activeBanners) do
-                    if b == banner then
-                        table.remove(activeBanners, i)
-                        break
-                    end
-                end
-            end
-        end)
+            activeBanners = math.max(0, activeBanners - 1)
+        end
     end)
 end
 
--- ======================================================================
--- NHÁNH 5: LIÊN KẾT ĐẾN CÁC THÀNH PHẦN GUI ĐÃ ĐƯỢC ĐẶT TRONG GUI-PV
--- ======================================================================
+-- ================= [ NHÁNH 3: INDEPENDENT CHAT GUI ] =================
+local oldChatGui = gethui():FindFirstChild("IndependentMobileChatGui") or playerGui:FindFirstChild("IndependentMobileChatGui")
+if oldChatGui then oldChatGui:Destroy() end
 
-local uiComp = _G.HubState.ChatUIComponents or {}
-local chatScrollingFrame = uiComp.chatScrollingFrame
-local chatTextBox = uiComp.chatTextBox
-local sendBtn = uiComp.sendBtn
-local countdownLabel = uiComp.countdownLabel
-local strikeThrough = uiComp.strikeThrough
+local chatScreenGui = Instance.new("ScreenGui")
+chatScreenGui.Name = "IndependentMobileChatGui"
+chatScreenGui.ResetOnSpawn = false
+chatScreenGui.IgnoreGuiInset = true
+chatScreenGui.DisplayOrder = 99999
+chatScreenGui.Enabled = _G.HubState.chatOpen
+chatScreenGui.Parent = gethui()
+_G.HubState.IndependentChatGui = chatScreenGui
 
--- ======================================================================
--- NHÁNH 6: LOGIC GỬI, NHẬN VÀ HIỂN THỊ TIN NHẮN
--- ======================================================================
+local mainChatFrame = Instance.new("Frame")
+mainChatFrame.Name = "MainChatFrame"
+mainChatFrame.Size = UDim2.new(0, 280, 0, 180)
+mainChatFrame.Position = UDim2.new(0, 10, 0.5, -90)
+mainChatFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+mainChatFrame.BackgroundTransparency = 0.2
+mainChatFrame.BorderSizePixel = 0
+mainChatFrame.Active = true
+mainChatFrame.Draggable = true
+mainChatFrame.Parent = chatScreenGui
 
+Instance.new("UICorner", mainChatFrame).CornerRadius = UDim.new(0, 10)
+Instance.new("UIStroke", mainChatFrame).Color = Color3.fromRGB(60, 60, 60)
+
+-- Thanh đầu: Chuông và Đếm ngược
+local topBar = Instance.new("Frame")
+topBar.Size = UDim2.new(1, 0, 0, 28)
+topBar.BackgroundTransparency = 1
+topBar.Parent = mainChatFrame
+
+local bellButton = Instance.new("TextButton")
+bellButton.Size = UDim2.new(0, 28, 0, 28)
+bellButton.Position = UDim2.new(0, 4, 0, 0)
+bellButton.BackgroundTransparency = 1
+bellButton.Text = "🔔"
+bellButton.TextSize = 14
+bellButton.Parent = topBar
+
+local bellSlash = Instance.new("TextLabel")
+bellSlash.Size = UDim2.new(1, 0, 1, 0)
+bellSlash.BackgroundTransparency = 1
+bellSlash.TextColor3 = Color3.fromRGB(255, 0, 0)
+bellSlash.TextSize = 16
+bellSlash.Font = Enum.Font.SourceSansBold
+bellSlash.Text = "/"
+bellSlash.Visible = not _G.HubState.chatNotifyEnabled
+bellSlash.Parent = bellButton
+
+bellButton.MouseButton1Click:Connect(function()
+    _G.HubState.chatNotifyEnabled = not _G.HubState.chatNotifyEnabled
+    bellSlash.Visible = not _G.HubState.chatNotifyEnabled
+end)
+
+local countdownLabel = Instance.new("TextLabel")
+countdownLabel.Size = UDim2.new(1, -36, 1, 0)
+countdownLabel.Position = UDim2.new(0, 32, 0, 0)
+countdownLabel.BackgroundTransparency = 1
+countdownLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+countdownLabel.TextSize = 11
+countdownLabel.Font = Enum.Font.SourceSans
+countdownLabel.TextXAlignment = Enum.TextXAlignment.Right
+countdownLabel.Text = "10s"
+countdownLabel.Parent = topBar
+
+-- Khung tin nhắn
+local messageScrolling = Instance.new("ScrollingFrame")
+messageScrolling.Size = UDim2.new(1, -10, 1, -68)
+messageScrolling.Position = UDim2.new(0, 5, 0, 30)
+messageScrolling.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+messageScrolling.BackgroundTransparency = 0.5
+messageScrolling.BorderSizePixel = 0
+messageScrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
+messageScrolling.AutomaticCanvasSize = Enum.AutomaticSize.Y
+messageScrolling.ScrollBarThickness = 4
+messageScrolling.Parent = mainChatFrame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 4)
+listLayout.Parent = messageScrolling
+
+-- Khung nhập
+local inputContainer = Instance.new("Frame")
+inputContainer.Size = UDim2.new(1, -10, 0, 30)
+inputContainer.Position = UDim2.new(0, 5, 1, -34)
+inputContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+inputContainer.BorderSizePixel = 0
+inputContainer.Parent = mainChatFrame
+
+Instance.new("UICorner", inputContainer).CornerRadius = UDim.new(0, 6)
+
+local chatTextBox = Instance.new("TextBox")
+chatTextBox.Size = UDim2.new(1, -35, 1, 0)
+chatTextBox.Position = UDim2.new(0, 6, 0, 0)
+chatTextBox.BackgroundTransparency = 1
+chatTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatTextBox.PlaceholderText = "Nhập tin nhắn..."
+chatTextBox.PlaceholderColor3 = Color3.fromRGB(130, 130, 130)
+chatTextBox.TextSize = 12
+chatTextBox.Font = Enum.Font.SourceSans
+chatTextBox.ClearTextOnFocus = false
+chatTextBox.Parent = inputContainer
+
+local sendButton = Instance.new("TextButton")
+sendButton.Size = UDim2.new(0, 30, 0, 30)
+sendButton.Position = UDim2.new(1, -30, 0, 0)
+sendButton.BackgroundColor3 = Color3.fromRGB(50, 150, 250)
+sendButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+sendButton.TextSize = 14
+sendButton.Font = Enum.Font.SourceSansBold
+sendButton.Text = ">"
+sendButton.Parent = inputContainer
+
+Instance.new("UICorner", sendButton).CornerRadius = UDim.new(0, 6)
+
+-- ================= [ NHÁNH 4: CHAT LOGIC & RENDER ] =================
 local renderedMessages = {}
-local lastSendTick = 0
-local forceRefreshEvent = Instance.new("BindableEvent")
+local processedKeys = {}
+local lastSendTime = 0
 
-local function isUserAtBottom()
-    if not chatScrollingFrame then return true end
-    return (chatScrollingFrame.CanvasPosition.Y + chatScrollingFrame.AbsoluteWindowSize.Y) >= (chatScrollingFrame.AbsoluteCanvasSize.Y - 20)
-end
+local function addMessageToUI(firebaseKey, name, display, text, isSelf)
+    if processedKeys[firebaseKey] then return end
+    processedKeys[firebaseKey] = true
 
-local function renderMessage(msg)
-    if not chatScrollingFrame then return end
-    if not msg or not msg._key then return end
-    if renderedMessages[msg._key] then return end
-    renderedMessages[msg._key] = true
-
-    pcall(function()
-        local atBottom = isUserAtBottom()
-
-        local msgFrame = Instance.new("Frame")
-        msgFrame.Size = UDim2.new(1, 0, 0, 0)
-        msgFrame.AutomaticSize = Enum.AutomaticSize.Y
-        msgFrame.BackgroundTransparency = 1
-        msgFrame.Parent = chatScrollingFrame
-
-        local isOwn = (tostring(msg.uid) == tostring(localPlayer.UserId))
-        local isMentioned = false
-        if msg.mentions then
-            for _, m in ipairs(msg.mentions) do
-                if m:lower() == localPlayer.Name:lower() then
-                    isMentioned = true
-                    break
-                end
-            end
+    if #messageScrolling:GetChildren() > 101 then
+        local oldest = messageScrolling:GetChildren()[2]
+        if oldest and oldest:IsA("TextLabel") then
+            oldest:Destroy()
         end
-
-        local inner = Instance.new("Frame")
-        inner.Size = UDim2.new(1, 0, 0, 0)
-        inner.AutomaticSize = Enum.AutomaticSize.Y
-        inner.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-        inner.BorderSizePixel = 0
-        inner.Parent = msgFrame
-        Instance.new("UICorner", inner).CornerRadius = UDim.new(0, 6)
-
-        if isMentioned or isOwn then
-            local stroke = Instance.new("UIStroke")
-            stroke.Color = isOwn and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 170, 0)
-            stroke.Thickness = 1.2
-            stroke.Parent = inner
-        end
-
-        local padding = Instance.new("UIPadding")
-        padding.PaddingTop = UDim.new(0, 6)
-        padding.PaddingBottom = UDim.new(0, 6)
-        padding.PaddingLeft = UDim.new(0, 6)
-        padding.PaddingRight = UDim.new(0, 6)
-        padding.Parent = inner
-
-        local thumbUrl = ""
-        pcall(function()
-            local targetUserId = tonumber(msg.uid) or localPlayer.UserId
-            thumbUrl = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=150&h=150"
-        end)
-
-        local avatarImg = Instance.new("ImageLabel")
-        avatarImg.Size = UDim2.new(0, 26, 0, 26)
-        avatarImg.Position = UDim2.new(0, 0, 0, 0)
-        avatarImg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-        avatarImg.Image = thumbUrl
-        avatarImg.Parent = inner
-        Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(0, 5)
-
-        local textLabel = Instance.new("TextLabel")
-        textLabel.Size = UDim2.new(1, -32, 0, 0)
-        textLabel.Position = UDim2.new(0, 32, 0, 0)
-        textLabel.AutomaticSize = Enum.AutomaticSize.Y
-        textLabel.BackgroundTransparency = 1
-        textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        textLabel.TextSize = 12
-        textLabel.Font = Enum.Font.SourceSans
-        textLabel.TextXAlignment = Enum.TextXAlignment.Left
-        textLabel.TextWrapped = true
-        textLabel.RichText = false
-        textLabel.Text = string.format("%s (@%s):\n%s", msg.display or "Unknown", msg.name or "User", msg.text or "")
-        textLabel.Parent = inner
-
-        if #chatScrollingFrame:GetChildren() > 100 then
-            local oldest = chatScrollingFrame:GetChildren()[1]
-            if oldest and oldest:IsA("Frame") then
-                oldest:Destroy()
-            end
-        end
-
-        if atBottom then
-            chatScrollingFrame.CanvasPosition = Vector2.new(0, chatScrollingFrame.AbsoluteCanvasSize.Y)
-        end
-    end)
-end
-
-local function extractMentions(text)
-    local mentions = {}
-    for name in string.gmatch(text, "@([%w_]+)") do
-        table.insert(mentions, name)
     end
-    return mentions
+
+    local msgLabel = Instance.new("TextLabel")
+    msgLabel.Size = UDim2.new(1, 0, 0, 0)
+    msgLabel.AutomaticSize = Enum.AutomaticSize.Y
+    msgLabel.BackgroundTransparency = 1
+    msgLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
+    msgLabel.TextSize = 12
+    msgLabel.Font = Enum.Font.SourceSans
+    msgLabel.TextXAlignment = Enum.TextXAlignment.Left
+    msgLabel.TextWrapped = true
+    msgLabel.Text = string.format("%s (@%s): %s", display, name, text)
+    msgLabel.Parent = messageScrolling
+
+    if isSelf then
+        Instance.new("UIStroke", msgLabel).Color = Color3.fromRGB(50, 150, 250)
+    end
+
+    local isAtBottom = (messageScrolling.CanvasPosition.Y >= messageScrolling.AbsoluteCanvasSize.Y - messageScrolling.AbsoluteWindowSize.Y - 20)
+    if isAtBottom then
+        messageScrolling.CanvasPosition = Vector2.new(0, messageScrolling.AbsoluteCanvasSize.Y)
+    end
 end
 
-function _G.HubLogic.ChatSend()
-    if not chatTextBox then return end
+local function executeSend()
     local text = chatTextBox.Text
-    if not text or text == "" then return end
-    if tick() - lastSendTick < 2 then return end
-    if #text > 200 then text = string.sub(text, 1, 200) end
-    lastSendTick = tick()
+    if text == "" or #text > 200 then return end
+    if tick() - lastSendTime < 2 then return end
+    lastSendTime = tick()
 
     chatTextBox.Text = ""
 
-    local mentions = extractMentions(text)
-    local localMsg = {
-        _key = "local_" .. tostring(tick()),
+    local mentions = {}
+    for mention in string.gmatch(text, "@([%w_]+)") do
+        table.insert(mentions, mention)
+    end
+
+    local payload = {
         uid = tostring(localPlayer.UserId),
         name = localPlayer.Name,
         display = localPlayer.DisplayName,
         text = text,
         mentions = mentions,
-        ts = tick() * 1000
+        ts = { [".sv"] = "timestamp" }
     }
-    renderMessage(localMsg)
+
+    if CONFIG.LOCAL_ECHO then
+        addMessageToUI("local_" .. tick(), localPlayer.Name, localPlayer.DisplayName, text, true)
+    end
 
     task.spawn(function()
-        Transport.sendMessage({ text = text, mentions = mentions })
-        forceRefreshEvent:Fire()
+        Transport.sendMessage(payload)
     end)
 end
 
-if sendBtn then
-    sendBtn.MouseButton1Click:Connect(_G.HubLogic.ChatSend)
-end
-if chatTextBox then
-    chatTextBox.FocusLost:Connect(function(enterPressed)
-        if enterPressed then
-            _G.HubLogic.ChatSend()
-        end
-    end)
-end
+chatTextBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then executeSend() end
+end)
+sendButton.MouseButton1Click:Connect(executeSend)
 
-function _G.HubLogic.ChatRefreshNow()
-    forceRefreshEvent:Fire()
-end
-
-function _G.HubLogic.ChatSetNotify(val)
-    _G.HubState.chatNotifyEnabled = val
-    if _G.HubState.ChatUIElements and _G.HubState.ChatUIElements.Toggle_ChatNotify then
-        pcall(function() _G.HubState.ChatUIElements.Toggle_ChatNotify:Set(val) end)
-    end
-    if strikeThrough then
-        strikeThrough.Visible = not val
-    end
-end
-
-function _G.HubLogic.ChatSetRate(val)
-    if val and val > 0 and val <= 600 then
-        _G.HubState.chatRefreshRate = val
-        if _G.HubState.ChatUIElements and _G.HubState.ChatUIElements.Input_ChatRefreshRate then
-            pcall(function() _G.HubState.ChatUIElements.Input_ChatRefreshRate:Set(tostring(val)) end)
-        end
-    end
-end
-
-function _G.HubLogic.ChatDestroy()
-    _G.HubState.chatAlive = false
-    if notifyGui then notifyGui:Destroy() end
-end
-
--- ======================================================================
--- NHÁNH 7: VÒNG LẶP CHẠY NỀN & THÔNG BÁO
--- ======================================================================
-
-local isFirstLoad = true
-
+-- Vòng lặp đồng bộ mạng & đếm ngược duy nhất
 task.spawn(function()
-    local backoff = 1
+    local firstLoad = true
     while _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
-        local msgs = Transport.fetchMessages()
-        if msgs then
-            backoff = 1
-            for _, msg in ipairs(msgs) do
-                if isFirstLoad then
-                    renderedMessages[msg._key] = true
-                else
-                    if not renderedMessages[msg._key] then
-                        if tostring(msg.uid) ~= tostring(localPlayer.UserId) then
-                            showNotificationBanner(msg)
+        if not _G.HubState.chatOpen then
+            task.wait(0.5)
+        else
+            _G.HubState.chatCountdown = _G.HubState.chatRefreshRate
+            while _G.HubState.chatCountdown > 0 and _G.HubState.chatOpen and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
+                countdownLabel.Text = _G.HubState.chatCountdown .. "s"
+                task.wait(1)
+                _G.HubState.chatCountdown = _G.HubState.chatCountdown - 1
+            end
+
+            if _G.HubState.chatOpen and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId then
+                countdownLabel.Text = "0s"
+                local data = Transport.fetchMessages()
+                if data and type(data) == "table" then
+                    for k, v in pairs(data) do
+                        if type(v) == "table" and v.text and v.name then
+                            if not processedKeys[k] then
+                                local isSelf = (v.name == localPlayer.Name)
+                                if not firstLoad and not isSelf then
+                                    local isMentioned = false
+                                    if v.mentions then
+                                        for _, m in ipairs(v.mentions) do
+                                            if string.lower(m) == string.lower(localPlayer.Name) then
+                                                isMentioned = true
+                                                break
+                                            end
+                                        end
+                                    end
+                                    if _G.HubState.chatNotifyEnabled or isMentioned then
+                                        showNotification(v.name, v.display or v.name, tonumber(v.uid) or 0, v.text)
+                                    end
+                                end
+                                addMessageToUI(k, v.name, v.display or v.name, v.text, isSelf)
+                            end
                         end
                     end
                 end
-                renderMessage(msg)
+                firstLoad = false
             end
-            isFirstLoad = false
-        else
-            backoff = math.min(backoff * 2, 60)
-        end
-
-        local currentRate = _G.HubState.chatRefreshRate or 5
-        local remaining = currentRate
-        while remaining > 0 and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
-            _G.HubState.chatCountdown = remaining
-            pcall(function()
-                if countdownLabel then
-                    countdownLabel.Text = tostring(remaining) .. "s trước làm mới"
-                end
-            end)
-            
-            local fired = false
-            local conn
-            conn = forceRefreshEvent.Event:Connect(function()
-                fired = true
-                if conn then conn:Disconnect() end
-            end)
-
-            local elapsed = 0
-            while elapsed < 1 and not fired and _G.HubState.chatAlive and _G.HubState.chatRunId == currentRunId do
-                task.wait(0.1)
-                elapsed = elapsed + 0.1
-            end
-            if conn then conn:Disconnect() end
-
-            if fired then break end
-            remaining = remaining - 1
         end
     end
 end)
 
--- ======================================================================
--- NHÁNH 8: TÍCH HỢP DỌN DẸP & HỦY
--- ======================================================================
+-- ================= [ NHÁNH 5: RAYFIELD TAB & LOGIC HOOK ] =================
+_G.HubLogic.ChatOpen = function()
+    _G.HubState.chatOpen = true
+    if _G.HubState.IndependentChatGui then
+        _G.HubState.IndependentChatGui.Enabled = true
+    end
+end
 
+_G.HubLogic.ChatClose = function()
+    _G.HubState.chatOpen = false
+    if _G.HubState.IndependentChatGui then
+        _G.HubState.IndependentChatGui.Enabled = false
+    end
+end
+
+_G.HubLogic.ChatRefreshNow = function()
+    _G.HubState.chatCountdown = 0
+end
+
+_G.HubLogic.ChatSetRate = function(rate)
+    local num = tonumber(rate)
+    if num and num >= 1 and num <= 10 then
+        _G.HubState.chatRefreshRate = math.floor(num + 0.5)
+    elseif num and num > 10 then
+        _G.HubState.chatRefreshRate = 10
+    end
+end
+
+-- Chờ Rayfield Window tồn tại để tạo tab Chat đầu tiên bên trái
 task.spawn(function()
-    while task.wait(0.5) do
-        if _G.HubLogic.DestroyAll then
-            local oldDestroy = _G.HubLogic.DestroyAll
-            _G.HubLogic.DestroyAll = function(...)
-                pcall(function() _G.HubLogic.ChatDestroy() end)
-                return oldDestroy(...)
+    local t = 0
+    while not _G.HubState.RayfieldWindow and t < 30 do
+        task.wait(0.25)
+        t = t + 0.25
+    end
+
+    local Window = _G.HubState.RayfieldWindow
+    if not Window then
+        warn("[CHAT]: Không tìm thấy RayfieldWindow sau 30 giây!")
+        return
+    end
+
+    pcall(function()
+        local ChatTab = Window:CreateTab("Chat", 4483362458)
+        
+        ChatTab:CreateToggle({
+            Name = "Mở chat real time",
+            CurrentValue = _G.HubState.chatOpen,
+            Flag = "Toggle_ChatOpen_Flag",
+            Callback = function(Value)
+                if Value then
+                    _G.HubLogic.ChatOpen()
+                else
+                    _G.HubLogic.ChatClose()
+                end
+            end,
+        })
+
+        ChatTab:CreateInput({
+            Name = "thời gian làm mới",
+            PlaceholderText = "10",
+            RemoveTextOnFocusLost = false,
+            Callback = function(Text)
+                _G.HubLogic.ChatSetRate(Text)
+            end,
+        })
+
+        ChatTab:CreateButton({
+            Name = "làm mới tức thì",
+            Callback = function()
+                _G.HubLogic.ChatRefreshNow()
+            end,
+        })
+
+        -- Sắp xếp tab Chat lên đầu tiên bên trái
+        local coreGuiInstance = gethui()
+        local function sortTabs()
+            for _, gui in ipairs(coreGuiInstance:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui:FindFirstChild("Main") then
+                    local main = gui.Main
+                    local tabList = main:FindFirstChild("TabList")
+                    local elements = main:FindFirstChild("Elements")
+                    if tabList and tabList:FindFirstChild("UIListLayout") then
+                        tabList.UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                        for _, child in ipairs(tabList:GetChildren()) do
+                            if child:IsA("TextButton") and child.Text == "Chat" then
+                                child.LayoutOrder = -1
+                            end
+                        end
+                    end
+                    if elements then
+                        for _, child in ipairs(elements:GetChildren()) do
+                            if child.Name == "Chat" then
+                                child.LayoutOrder = -1
+                            end
+                        end
+                    end
+                end
             end
-            break
         end
+        sortTabs()
+    end)
+end)
+
+-- Hook destroyHub gốc để dọn dẹp chat
+task.spawn(function()
+    while not _G.HubLogic.DestroyAll do task.wait(0.5) end
+    local originalDestroy = _G.HubLogic.DestroyAll
+    _G.HubLogic.DestroyAll = function()
+        ChatDestroy()
+        originalDestroy()
     end
 end)
